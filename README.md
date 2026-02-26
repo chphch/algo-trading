@@ -13,4 +13,4 @@ pip install -r requirements.txt
 4. Run **IB Gateway** and log in with your account.
 5. In the upper menu of **IB Gateway**, go to "Configure->Settings" and uncheck "Read-Only API".
 6. Run `python login_test.py` to test the connection to IB Gateway.
-7. Run `python test.py` to 
+7. Run `python test_bitcoin.py` to test the Bitcoin trading logic.

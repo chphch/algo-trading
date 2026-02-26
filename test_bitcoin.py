@@ -2,9 +2,37 @@ import asyncio
 import os
 from pathlib import Path
 
-import pandas_ta as ta
+import pandas as pd
+import numpy as np
 from ib_insync import *
 from decimal import Decimal
+
+
+def calculate_rsi(prices, period=14):
+    """RSI를 계산합니다"""
+    deltas = np.diff(prices)
+    seed = deltas[:period+1]
+    up = seed[seed >= 0].sum() / period
+    down = -seed[seed < 0].sum() / period
+    rs = up / down if down != 0 else 0
+    rsi = np.zeros_like(prices)
+    rsi[:period] = 100. - 100. / (1. + rs)
+    
+    for i in range(period, len(prices)):
+        delta = deltas[i-1]
+        if delta > 0:
+            upval = delta
+            downval = 0.
+        else:
+            upval = 0.
+            downval = -delta
+        
+        up = (up * (period - 1) + upval) / period
+        down = (down * (period - 1) + downval) / period
+        rs = up / down if down != 0 else 0
+        rsi[i] = 100. - 100. / (1. + rs)
+    
+    return rsi[-1]  # most recent RSI value
 
 
 def load_env_file(env_path: Path) -> None:
@@ -99,8 +127,7 @@ async def trade_logic():
         df = util.df(bars)
         
         # RSI 계산 (RSI 1 이상은 사실상 모든 시점에서 참입니다)
-        df['RSI'] = ta.rsi(df['close'], length=14)
-        current_rsi = df['RSI'].iloc[-1]
+        current_rsi = calculate_rsi(df['close'].values, period=14)
         current_price = df['close'].iloc[-1]
 
         print(f"[{count+1}/{limit}] 현재가: {current_price}, RSI: {current_rsi:.2f}")
@@ -109,12 +136,12 @@ async def trade_logic():
         if current_rsi >= 1:
             # 매수 주문 (cashQty 사용 - IB의 crypto 요구사항)
             buy_order = MarketOrder('BUY', 0)
-            buy_order.cashQty = 6  # 6달러만큼 매수
-            buy_order.tif = 'GTC'  # Good Till Cancel
+            buy_order.cashQty = 10  # 10달러로 증액하여 최소 주문량 확보
+            buy_order.tif = 'IOC'  # Immediate or Cancel (crypto 마켓 오더 필수)
             if IB_ACCOUNT_ID:
                 buy_order.account = IB_ACCOUNT_ID
             buy_trade = ib.placeOrder(contract, buy_order)
-            print(f"매수 주문 전송... (금액: $6)")
+            print(f"매수 주문 전송... (금액: $10)")
 
             # 매수 주문 상태/에러 로그 대기
             await _wait_for_trade_done(buy_trade, timeout=15.0)
@@ -129,12 +156,13 @@ async def trade_logic():
             
             if btc_qty > 0:
                 # 매도 주문 (보유한 BTC 전체 매도)
+                # SELL은 수량 기반 사용 (cashQty 지원 안 함)
                 sell_order = MarketOrder('SELL', btc_qty)
-                sell_order.tif = 'GTC'
+                sell_order.tif = 'IOC'  # Immediate or Cancel (crypto 마켓 오더 필수)
                 if IB_ACCOUNT_ID:
                     sell_order.account = IB_ACCOUNT_ID
                 sell_trade = ib.placeOrder(contract, sell_order)
-                print(f"매도 주문 전송... (수량: {btc_qty})")
+                print(f"매도 주문 전송... (수량: {btc_qty:.8f} BTC)")
                 await _wait_for_trade_done(sell_trade, timeout=15.0)
             else:
                 print("매수 체결 대기 중... BTC 포지션 없음")
