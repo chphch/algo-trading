@@ -28,6 +28,52 @@ ib = IB()
 # 포트번호 확인: 실전 4001, 모의 4002
 ib.connect('127.0.0.1', 4001, clientId=1)
 
+
+def _log_order_status(trade: Trade, label: str) -> None:
+    status = trade.orderStatus
+    print(
+        f"{label} status={status.status} filled={status.filled} "
+        f"remaining={status.remaining} avgFillPrice={status.avgFillPrice}"
+    )
+    if trade.log:
+        last = trade.log[-1]
+        print(
+            f"{label} log: time={last.time} status={last.status} "
+            f"message={last.message}"
+        )
+
+
+def _setup_ib_logging() -> None:
+    def on_error(req_id, error_code, error_string, contract):
+        contract_text = f" {contract}" if contract else ""
+        print(f"IB error reqId={req_id} code={error_code} msg={error_string}{contract_text}")
+
+    def on_order_status(trade: Trade):
+        _log_order_status(trade, "orderStatus")
+
+    def on_exec_details(trade: Trade, fill):
+        print(
+            f"execution: orderId={trade.order.orderId} "
+            f"qty={fill.execution.shares} price={fill.execution.price} "
+            f"time={fill.execution.time}"
+        )
+
+    ib.errorEvent += on_error
+    ib.orderStatusEvent += on_order_status
+    ib.execDetailsEvent += on_exec_details
+
+
+async def _wait_for_trade_done(trade: Trade, timeout: float = 10.0) -> None:
+    end = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < end:
+        if trade.isDone():
+            break
+        await asyncio.sleep(0.2)
+    _log_order_status(trade, "final")
+
+
+_setup_ib_logging()
+
 # 2. 비트코인 컨트랙트 설정 (PAXOS 거래소 경유)
 contract = Crypto('BTC', 'PAXOS', 'USD')
 ib.qualifyContracts(contract)
@@ -42,7 +88,7 @@ async def trade_logic():
         # 실시간 데이터 가져오기 (RSI 계산을 위해 1시간 분량의 1분봉 요청)
         bars = await ib.reqHistoricalDataAsync(
             contract, endDateTime='', durationStr='3600 S',
-            barSizeSetting='1 min', whatToShow='AGGTRADES', useRTH=True
+            barSizeSetting='1 min', whatToShow='AGGTRADES', useRTH=False
         )
         
         if not bars:
@@ -69,15 +115,15 @@ async def trade_logic():
                 buy_order.account = IB_ACCOUNT_ID
             buy_trade = ib.placeOrder(contract, buy_order)
             print(f"매수 주문 전송... (금액: $6)")
+
+            # 매수 주문 상태/에러 로그 대기
+            await _wait_for_trade_done(buy_trade, timeout=15.0)
             
-            # 매수 주문이 체결될 때까지 대기
-            await asyncio.sleep(2)
-            
-            # 포지션 확인하여 보유 수량 조회
+            # 포지션 확인하여 보유 수량 조회 (.env에 설정된 계정만 사용)
             positions = ib.positions()
             btc_qty = 0
             for pos in positions:
-                if pos.contract.symbol == 'BTC':
+                if pos.contract.symbol == 'BTC' and pos.account == IB_ACCOUNT_ID:
                     btc_qty = pos.position
                     break
             
@@ -89,6 +135,7 @@ async def trade_logic():
                     sell_order.account = IB_ACCOUNT_ID
                 sell_trade = ib.placeOrder(contract, sell_order)
                 print(f"매도 주문 전송... (수량: {btc_qty})")
+                await _wait_for_trade_done(sell_trade, timeout=15.0)
             else:
                 print("매수 체결 대기 중... BTC 포지션 없음")
             
